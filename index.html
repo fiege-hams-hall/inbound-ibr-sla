@@ -7924,7 +7924,14 @@ function __refreshAllScreens() {
         'render', 'renderDailyPlan', 'renderHeadcountOutcomes', 'renderHistoryArchive',
         'v28RenderLoadDashboard', 'v28RenderLoadAll', 'v28RenderLoadLog',
         'v28RenderDriverDashboard', 'v28RenderDriverAll', 'v28RenderDriverLog',
-        'v28RenderCalculator', 'v28RenderHub', 'v28RenderScreen'
+        'v28RenderCalculator', 'v28RenderHub'
+        // v28RenderScreen (the big/TV screen) is deliberately NOT force-refreshed
+        // here — it rebuilds its whole panel via innerHTML and replays a
+        // count-up animation on every render, which looked like flashing when
+        // it also fired on every sync pull. Its own 15s rotation timer
+        // (v28StartScreen) already calls it on a steady cadence and reads
+        // these same variables, so it still picks up fresh data — just on
+        // its own rhythm instead of being interrupted mid-count.
     ].forEach(fnName => {
         try {
             // Top-level `function` declarations (unlike `let`/`const`) are
