@@ -841,6 +841,11 @@ function saveRecords() {
     localStorage.setItem("simpleIbrRecords", JSON.stringify(records));
     localStorage.setItem("dailyPlansSeparatePage", JSON.stringify(dailyPlans));
     localStorage.setItem("headcountOutcomesSeparatePage", JSON.stringify(headcountOutcomes));
+    if (typeof __pushArray === 'function') {
+        __pushArray('inbound_records', records, __lastKnownIds.records);
+        __pushArray('inbound_daily_plans', dailyPlans, __lastKnownIds.dailyPlans);
+        __pushArray('inbound_headcount_outcomes', headcountOutcomes, __lastKnownIds.headcountOutcomes);
+    }
 }
 function requireManagerPassword(actionName) {
     const entered = prompt(`Manager password required for: ${actionName}`);
@@ -855,6 +860,7 @@ function changeManagerPassword() {
     if (!p || p.trim().length < 4) { showBoldNotice("<b>INVALID PASSWORD</b><br><br>Password must be at least 4 characters.", "error"); return; }
     managerPassword = p.trim();
     localStorage.setItem("ibrManagerPassword", managerPassword);
+    if (typeof __pushSetting === 'function') __pushSetting('managerPassword', managerPassword);
     showBoldNotice("<b>PASSWORD UPDATED</b><br><br>Manager password updated successfully.", "success");
 }
 function showPage(pageId) {
@@ -6279,7 +6285,7 @@ let v28DriverSettings=JSON.parse(localStorage.getItem(V28_KEYS.driverSettings)||
 })();
 let v28ScreenIndex=0,v28ScreenRunning=true,v28ScreenTimer=null;
 let v29ScreenSettings=JSON.parse(localStorage.getItem(V28_KEYS.screenSettings)||'null')||{overview:true,sla:true,plan:true,performance:true};
-function v28Save(){localStorage.setItem(V28_KEYS.loads,JSON.stringify(v28Loads));localStorage.setItem(V28_KEYS.drivers,JSON.stringify(v28Drivers));localStorage.setItem(V28_KEYS.loadSettings,JSON.stringify(v28LoadSettings));localStorage.setItem(V28_KEYS.driverSettings,JSON.stringify(v28DriverSettings));localStorage.setItem(V28_KEYS.screenSettings,JSON.stringify(v29ScreenSettings));}
+function v28Save(){localStorage.setItem(V28_KEYS.loads,JSON.stringify(v28Loads));localStorage.setItem(V28_KEYS.drivers,JSON.stringify(v28Drivers));localStorage.setItem(V28_KEYS.loadSettings,JSON.stringify(v28LoadSettings));localStorage.setItem(V28_KEYS.driverSettings,JSON.stringify(v28DriverSettings));localStorage.setItem(V28_KEYS.screenSettings,JSON.stringify(v29ScreenSettings));if(typeof __pushArray==='function'){__pushArray('inbound_loads',v28Loads,__lastKnownIds.v28Loads);__pushArray('inbound_drivers',v28Drivers,__lastKnownIds.v28Drivers);__pushSetting('loadSettings',v28LoadSettings);__pushSetting('driverSettings',v28DriverSettings);__pushSetting('screenSettings',v29ScreenSettings);}}
 function v28Today(){const d=new Date();d.setMinutes(d.getMinutes()-d.getTimezoneOffset());return d.toISOString().slice(0,10)}
 function v28SetToday(id){const e=document.getElementById(id);if(e)e.value=v28Today()}
 function v28E(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]))}
@@ -7855,6 +7861,217 @@ body.v38-bs #bigScreenPage{height:100vh;min-height:100vh;max-height:100vh;paddin
 
   setInterval(function () { window.v43Normalize(); }, 3000);
   window.v43Normalize();
+})();
+</script>
+<script id="v29SupabaseSyncScript">
+/* V29 multi-device sync. Everything above still works fully offline on
+   localStorage exactly as before — this block only adds a best-effort
+   Supabase backend so the same data shows up on every device/screen.
+   If the library fails to load or a request fails, we just stay in
+   offline/localStorage-only mode instead of breaking anything. */
+let __supa = null;
+const __lastKnownIds = {
+    records: new Set(),
+    dailyPlans: new Set(),
+    headcountOutcomes: new Set(),
+    v28Loads: new Set(),
+    v28Drivers: new Set()
+};
+let __syncPullTimer = null;
+
+async function __pushArray(table, arr, knownIds) {
+    if (!__supa) return;
+    try {
+        const byId = new Map();
+        (arr || []).forEach(item => {
+            if (item && item.id !== undefined && item.id !== null) byId.set(String(item.id), item);
+        });
+        const rows = Array.from(byId, ([id, data]) => ({ id, data, updated_at: new Date().toISOString() }));
+        const currentIds = new Set(byId.keys());
+        const toDelete = Array.from(knownIds).filter(id => !currentIds.has(id));
+
+        if (rows.length) {
+            const { error } = await __supa.from(table).upsert(rows, { onConflict: 'id' });
+            if (error) { console.warn('Supabase upsert failed for ' + table, error); return; }
+        }
+        if (toDelete.length) {
+            const { error } = await __supa.from(table).delete().in('id', toDelete);
+            if (error) { console.warn('Supabase delete failed for ' + table, error); return; }
+        }
+        knownIds.clear();
+        currentIds.forEach(id => knownIds.add(id));
+    } catch (e) {
+        console.warn('Supabase push failed for ' + table, e);
+    }
+}
+
+async function __pushSetting(key, value) {
+    if (!__supa) return;
+    try {
+        const { error } = await __supa
+            .from('inbound_settings')
+            .upsert({ key, value, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+        if (error) console.warn('Supabase setting push failed for ' + key, error);
+    } catch (e) {
+        console.warn('Supabase setting push failed for ' + key, e);
+    }
+}
+
+function __refreshAllScreens() {
+    [
+        'render', 'renderDailyPlan', 'renderHeadcountOutcomes', 'renderHistoryArchive',
+        'v28RenderLoadDashboard', 'v28RenderLoadAll', 'v28RenderLoadLog',
+        'v28RenderDriverDashboard', 'v28RenderDriverAll', 'v28RenderDriverLog',
+        'v28RenderCalculator', 'v28RenderHub', 'v28RenderScreen'
+    ].forEach(fnName => {
+        try {
+            // Top-level `function` declarations (unlike `let`/`const`) are
+            // exposed as properties of `window`, so this reaches every
+            // render function defined anywhere earlier in the document.
+            if (typeof window[fnName] === 'function') window[fnName]();
+        } catch (e) { /* screen not currently mounted — ignore */ }
+    });
+}
+
+async function __pullAll() {
+    if (!__supa) return false;
+    try {
+        const [recRes, planRes, hcRes, loadRes, driverRes, setRes] = await Promise.all([
+            __supa.from('inbound_records').select('id,data'),
+            __supa.from('inbound_daily_plans').select('id,data'),
+            __supa.from('inbound_headcount_outcomes').select('id,data'),
+            __supa.from('inbound_loads').select('id,data'),
+            __supa.from('inbound_drivers').select('id,data'),
+            __supa.from('inbound_settings').select('key,value')
+        ]);
+        const firstError = [recRes, planRes, hcRes, loadRes, driverRes, setRes].find(r => r.error);
+        if (firstError) { console.warn('Supabase pull failed', firstError.error); return false; }
+
+        const serverHasData = recRes.data.length || planRes.data.length || hcRes.data.length ||
+            loadRes.data.length || driverRes.data.length || setRes.data.length;
+        if (!serverHasData) return false;
+
+        records = recRes.data.map(r => r.data);
+        dailyPlans = planRes.data.map(r => r.data);
+        headcountOutcomes = hcRes.data.map(r => r.data);
+        v28Loads = loadRes.data.map(r => r.data);
+        v28Drivers = driverRes.data.map(r => r.data);
+
+        __lastKnownIds.records = new Set(recRes.data.map(r => r.id));
+        __lastKnownIds.dailyPlans = new Set(planRes.data.map(r => r.id));
+        __lastKnownIds.headcountOutcomes = new Set(hcRes.data.map(r => r.id));
+        __lastKnownIds.v28Loads = new Set(loadRes.data.map(r => r.id));
+        __lastKnownIds.v28Drivers = new Set(driverRes.data.map(r => r.id));
+
+        const settingsMap = {};
+        setRes.data.forEach(row => { settingsMap[row.key] = row.value; });
+        if (settingsMap.loadSettings) v28LoadSettings = settingsMap.loadSettings;
+        if (settingsMap.driverSettings) v28DriverSettings = settingsMap.driverSettings;
+        if (settingsMap.screenSettings) v29ScreenSettings = settingsMap.screenSettings;
+        if (settingsMap.managerPassword) managerPassword = settingsMap.managerPassword;
+
+        // Mirror the pulled server state into localStorage so this device
+        // still has the latest data if it later goes offline.
+        localStorage.setItem('simpleIbrRecords', JSON.stringify(records));
+        localStorage.setItem('dailyPlansSeparatePage', JSON.stringify(dailyPlans));
+        localStorage.setItem('headcountOutcomesSeparatePage', JSON.stringify(headcountOutcomes));
+        localStorage.setItem(V28_KEYS.loads, JSON.stringify(v28Loads));
+        localStorage.setItem(V28_KEYS.drivers, JSON.stringify(v28Drivers));
+        localStorage.setItem(V28_KEYS.loadSettings, JSON.stringify(v28LoadSettings));
+        localStorage.setItem(V28_KEYS.driverSettings, JSON.stringify(v28DriverSettings));
+        localStorage.setItem(V28_KEYS.screenSettings, JSON.stringify(v29ScreenSettings));
+        if (settingsMap.managerPassword) localStorage.setItem('ibrManagerPassword', managerPassword);
+
+        __refreshAllScreens();
+        return true;
+    } catch (e) {
+        console.warn('Supabase pull failed', e);
+        return false;
+    }
+}
+
+async function __seedServerFromLocal() {
+    if (!__supa) return;
+    await __pushArray('inbound_records', records, __lastKnownIds.records);
+    await __pushArray('inbound_daily_plans', dailyPlans, __lastKnownIds.dailyPlans);
+    await __pushArray('inbound_headcount_outcomes', headcountOutcomes, __lastKnownIds.headcountOutcomes);
+    await __pushArray('inbound_loads', v28Loads, __lastKnownIds.v28Loads);
+    await __pushArray('inbound_drivers', v28Drivers, __lastKnownIds.v28Drivers);
+    await __pushSetting('loadSettings', v28LoadSettings);
+    await __pushSetting('driverSettings', v28DriverSettings);
+    await __pushSetting('screenSettings', v29ScreenSettings);
+    await __pushSetting('managerPassword', managerPassword);
+}
+
+async function __bootstrapFromServer() {
+    if (!__supa) return;
+    const pulled = await __pullAll();
+    if (!pulled) {
+        // Nothing on the server yet — this is the first device to connect,
+        // so push its existing localStorage data up as the starting point
+        // for every other device/screen.
+        await __seedServerFromLocal();
+    }
+}
+
+function __scheduleServerPull() {
+    if (__syncPullTimer) clearTimeout(__syncPullTimer);
+    __syncPullTimer = setTimeout(__pullAll, 400);
+}
+
+function __subscribeRealtime() {
+    if (!__supa) return;
+    __supa
+        .channel('inbound-ibr-sync')
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'inbound_records' }, __scheduleServerPull)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'inbound_daily_plans' }, __scheduleServerPull)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'inbound_headcount_outcomes' }, __scheduleServerPull)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'inbound_loads' }, __scheduleServerPull)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'inbound_drivers' }, __scheduleServerPull)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'inbound_settings' }, __scheduleServerPull)
+        .subscribe();
+}
+
+function v29InitSupabaseSync() {
+    if (typeof supabase === 'undefined' || !supabase.createClient) {
+        console.warn('Supabase library failed to load — staying in offline/localStorage-only mode.');
+        return;
+    }
+    __supa = supabase.createClient(
+        'https://wroqziosudpdvbjpppan.supabase.co',
+        'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Indyb3F6aW9zdWRwZHZianBwcGFuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODgyNjkwNzAsImV4cCI6MjEwMzg0NTA3MH0.Qej65xlplIIpy_BOIW5mr1fDR9hBpyDx0OTnjosAV38'
+    );
+    __bootstrapFromServer().then(() => {
+        __subscribeRealtime();
+        // Safety net in case the realtime socket drops silently (network
+        // blip, screen waking from sleep) — matches the pattern already
+        // used on the main Fiege TV board.
+        setInterval(__pullAll, 60000);
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') __pullAll();
+        });
+        window.addEventListener('online', __pullAll);
+    });
+}
+
+(function v29LoadSupabaseLibrary() {
+    const sources = [
+        'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js',
+        'https://unpkg.com/@supabase/supabase-js@2/dist/umd/supabase.js'
+    ];
+    let idx = 0;
+    function tryNext() {
+        if (idx >= sources.length) {
+            console.warn('Supabase library unavailable from any source — staying in offline/localStorage-only mode.');
+            return;
+        }
+        const s = document.createElement('script');
+        s.src = sources[idx];
+        s.onerror = function () { idx++; tryNext(); };
+        s.onload = v29InitSupabaseSync;
+        document.head.appendChild(s);
+    }
+    tryNext();
 })();
 </script>
 </body>
